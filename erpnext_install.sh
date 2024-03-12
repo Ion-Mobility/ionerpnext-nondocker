@@ -385,7 +385,7 @@ case "$continue_prod" in
     ## Apply Caddy configuration
     echo -e "${YELLOW}Applying Caddy configuration...${NC}"
     sleep 1
-    cat << EOF > Caddyfile
+    cat > /etc/caddy/Caddyfile <<EOF
 $site_name {
     root * /home/frappe/frappe-bench/sites
     file_server
