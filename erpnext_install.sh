@@ -305,6 +305,10 @@ sudo npm install -g yarn
 echo -e "${GREEN}Package installation complete!${NC}"
 sleep 2
 
+sudo npm cache clean -f
+sudo npm install -g n
+sudo n 18
+
 # Now let's reactivate virtual environment
 if [ -z "$py_version" ] || [ "$py_major" -lt 3 ] || [ "$py_major" -eq 3 -a "$py_minor" -lt 10 ]; then
     python3.10 -m venv $USER && \
@@ -315,7 +319,7 @@ fi
 #Install bench
 echo -e "${YELLOW}Now let's install bench${NC}"
 sleep 2
-sudo pip3 install frappe-bench
+pip3 install frappe-bench
 
 #Initiate bench in frappe-bench folder, but get a supervisor can't restart bench error...
 echo -e "${YELLOW}Initialising bench in frappe-bench folder.${NC}" 
@@ -346,17 +350,90 @@ continue_prod=$(echo "$continue_prod" | tr '[:upper:]' '[:lower:]')
 case "$continue_prod" in
     "yes" | "y")
 
+    ## Installing Supervisor
+    echo -e "${YELLOW}Installing Supervisor...${NC}"
+    sleep 2
+    sudo apt install supervisor -y
+
     echo -e "${YELLOW}Installing packages and dependencies for Production...${NC}"
     sleep 2
     # Setup supervisor and nginx config
-    yes | sudo bench setup production $USER && \
+    yes | sudo bench setup supervisor && \
     echo -e "${YELLOW}Applying necessary permissions to supervisor...${NC}"
     sleep 1
+    ln -s $pwd/config/supervisor.conf /etc/supervisor/conf.d/frappe-bench.conf
+
+    ## change /usr/bin/node on config/supervisor.conf to /usr/local/bin/node
+    sudo sed -i 's/\/usr\/bin\/node/\/usr\/local\/bin\/node/g' /etc/supervisor/conf.d/frappe-bench.conf
+
+
     # Change ownership of supervisord.conf
     # Path to the supervisord.conf file
     FILE="/etc/supervisor/supervisord.conf"
     # Construct the search pattern with the current $USER environment variable
     SEARCH_PATTERN="chown=$USER:$USER"
+
+    ## Install caddy
+    echo -e "${YELLOW}Installing Caddy...${NC}"
+    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
+    sudo apt install caddy -y
+    sudo systemctl enable caddy
+
+    ## Apply Caddy configuration
+    echo -e "${YELLOW}Applying Caddy configuration...${NC}"
+    sleep 1
+    cat << EOF > Caddyfile
+$site_name {
+    root * /home/frappe/frappe-bench/sites
+    file_server
+
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "same-origin, strict-origin-when-cross-origin"
+    }
+
+    route /assets/* {
+        header Cache-Control "max-age=31536000"
+        file_server
+    }
+
+    route /socket.io/* {
+        reverse_proxy http://127.0.0.1:9000
+    }
+
+    route /files/* {
+        header Content-disposition "attachment"
+        file_server
+    }
+
+    route {
+        reverse_proxy http://127.0.0.1:8000
+    }
+
+    handle_errors {
+        rewrite * /502.html
+        file_server
+    }
+
+    log {
+        output file /var/log/caddy/access.log
+        format console
+    }
+
+    encode gzip
+}
+EOF
+
+    ## Restart Caddy
+    echo -e "${YELLOW}Restarting Caddy...${NC}"
+    sleep 1
+    sudo systemctl restart caddy
 
     # Check if the pattern exists in the file
     if grep -q "$SEARCH_PATTERN" "$FILE"; then
@@ -373,7 +450,7 @@ case "$continue_prod" in
     sudo service supervisor restart && \
 
     # Setup production again to reflect the new site
-    yes | sudo bench setup production $USER && \
+    yes | sudo bench setup supervisor && \
 
     echo -e "${YELLOW}Enabling Scheduler...${NC}"
     sleep 1
@@ -400,50 +477,52 @@ case "$continue_prod" in
     printf "${NC}\n"
     sleep 3
 
-    echo -e "${YELLOW}Would you like to install SSL? (yes/no)${NC}"
+    ## Disable prompt for SSL installation because we are using Caddy
 
-    read -p "Response: " continue_ssl
+    # echo -e "${YELLOW}Would you like to install SSL? (yes/no)${NC}"
 
-    continue_ssl=$(echo "$continue_ssl" | tr '[:upper:]' '[:lower:]')
+    # read -p "Response: " continue_ssl
 
-    case "$continue_ssl" in
-        "yes" | "y")
-            echo -e "${YELLOW}Make sure your domain name is pointed to the IP of this instance and is reachable before your proceed.${NC}"
-            sleep 3
-            # Prompt user for email
-            read -p "Enter your email address: " email_address
+    # continue_ssl=$(echo "$continue_ssl" | tr '[:upper:]' '[:lower:]')
 
-            # Install Certbot
-            echo -e "${YELLOW}Installing Certbot...${NC}"
-            sleep 1
-            if [ "$DISTRO" == "Debian" ]; then
-                echo -e "${YELLOW}Fixing openssl package on Debian...${NC}"
-                sleep 4
-                sudo pip3 uninstall cryptography -y
-                yes | sudo pip3 install pyopenssl==22.0.0 cryptography==36.0.0
-                echo -e "${GREEN}Package fixed${NC}"
-                sleep 2
-            fi
-            # Install Certbot Clasic
-            # sudo apt install certbot python3-certbot-nginx -y
-            sudo apt install snapd -y && \
-            sudo snap install core && \
-            sudo snap refresh core && \
-            sudo snap install --classic certbot && \
-            sudo ln -s /snap/bin/certbot /usr/bin/certbot
+    # case "$continue_ssl" in
+    #     "yes" | "y")
+    #         echo -e "${YELLOW}Make sure your domain name is pointed to the IP of this instance and is reachable before your proceed.${NC}"
+    #         sleep 3
+    #         # Prompt user for email
+    #         read -p "Enter your email address: " email_address
+
+    #         # Install Certbot
+    #         echo -e "${YELLOW}Installing Certbot...${NC}"
+    #         sleep 1
+    #         if [ "$DISTRO" == "Debian" ]; then
+    #             echo -e "${YELLOW}Fixing openssl package on Debian...${NC}"
+    #             sleep 4
+    #             sudo pip3 uninstall cryptography -y
+    #             yes | sudo pip3 install pyopenssl==22.0.0 cryptography==36.0.0
+    #             echo -e "${GREEN}Package fixed${NC}"
+    #             sleep 2
+    #         fi
+    #         # Install Certbot Clasic
+    #         # sudo apt install certbot python3-certbot-nginx -y
+    #         sudo apt install snapd -y && \
+    #         sudo snap install core && \
+    #         sudo snap refresh core && \
+    #         sudo snap install --classic certbot && \
+    #         sudo ln -s /snap/bin/certbot /usr/bin/certbot
             
-            # Obtain and Install the certificate
-            echo -e "${YELLOW}Obtaining and installing SSL certificate...${NC}"
-            sleep 2
-            sudo certbot --nginx --non-interactive --agree-tos --email $email_address -d $site_name
-            echo -e "${GREEN}SSL certificate installed successfully.${NC}"
-            sleep 2
-            ;;
-        *)
-            echo -e "${RED}Skipping SSL installation...${NC}"
-            sleep 3
-            ;;
-    esac
+    #         # Obtain and Install the certificate
+    #         echo -e "${YELLOW}Obtaining and installing SSL certificate...${NC}"
+    #         sleep 2
+    #         sudo certbot --nginx --non-interactive --agree-tos --email $email_address -d $site_name
+    #         echo -e "${GREEN}SSL certificate installed successfully.${NC}"
+    #         sleep 2
+    #         ;;
+    #     *)
+    #         echo -e "${RED}Skipping SSL installation...${NC}"
+    #         sleep 3
+    #         ;;
+    # esac
 
     # Now let's reactivate virtual environment
     if [ -z "$py_version" ] || [ "$py_major" -lt 3 ] || [ "$py_major" -eq 3 -a "$py_minor" -lt 10 ]; then
