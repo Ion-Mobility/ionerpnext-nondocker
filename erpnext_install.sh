@@ -385,7 +385,7 @@ case "$continue_prod" in
     ## Apply Caddy configuration
     echo -e "${YELLOW}Applying Caddy configuration...${NC}"
     sleep 1
-    cat > /etc/caddy/Caddyfile <<EOF
+    cat << EOF | sudo tee /etc/caddy/Caddyfile
 $site_name {
     root * /home/frappe/frappe-bench/sites
     file_server
@@ -409,7 +409,7 @@ $site_name {
 
     route /files/* {
         header Content-disposition "attachment"
-        file_server
+        rewrite * /$site_name/public{uri}
     }
 
     route {
